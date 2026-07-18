@@ -315,6 +315,18 @@ class RecallRequest(BaseModel):
         description="Compound tag filter using boolean groups. Groups in the list are AND-ed. "
         "Each group is a leaf {tags, match} or compound {and: [...]}, {or: [...]}, {not: ...}.",
     )
+    boost_tags: list[str] | None = Field(
+        default=None,
+        description="Tags whose matching memories get an additive ranking boost (NOT a filter). "
+        "Use to surface memories relevant to the current working context — e.g. tags naming the "
+        "files being edited (['file:src/x.ts']) or a memory type (['type:bug']). Matched memories "
+        "are also protected from the reranker candidate cap. Independent of `tags` (which filters).",
+    )
+    boost_tags_level: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description="Strength of the `boost_tags` bump: 'low' nudges above the near-0 tail, "
+        "'medium' competes with weak matches, 'high' outranks most semantic matches.",
+    )
     min_scores: MinScores | None = Field(
         default=None,
         description="Optional per-stage score floors (all inclusive, AND-ed). `semantic` and `keyword` are "
@@ -3927,6 +3939,8 @@ def _register_routes(app: FastAPI):
                         tags_match=request.tags_match,
                         tag_groups=request.tag_groups,
                         min_scores=request.min_scores,
+                        boost_tags=request.boost_tags,
+                        boost_tags_level=request.boost_tags_level,
                     ),
                     operation="recall",
                     bank_id=bank_id,

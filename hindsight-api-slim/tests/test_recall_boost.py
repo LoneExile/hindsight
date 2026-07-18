@@ -6,7 +6,9 @@ from hindsight_api.config import RECALL_BOOST_LEVELS, _parse_strategy_boosts
 from hindsight_api.engine.search.recall_boost import (
     BOOST_LEVELS,
     additive_strategy_boost,
+    additive_tag_match_boost,
     boosted_rrf_score,
+    tag_match_rrf_delta,
 )
 from hindsight_api.engine.search.types import MergedCandidate, RetrievalResult
 
@@ -124,3 +126,67 @@ def test_additive_sums_matched_arms():
 
 def test_additive_ignores_unmatched_arm():
     assert additive_strategy_boost({"semantic_rank": 1}, {"graph": "high"}) == 0.0
+
+
+# --- tag-match boost (caller-supplied, per-recall) ----------------------------
+
+
+def _tagged(rrf_score: float, tags: list[str] | None) -> MergedCandidate:
+    retrieval = RetrievalResult(id="x", text="t", fact_type="world", tags=tags)
+    return MergedCandidate(retrieval=retrieval, rrf_score=rrf_score, source_ranks={})
+
+
+def test_tag_additive_noop_when_no_boost_tags():
+    assert additive_tag_match_boost(["file:a.ts"], None, "high") == 0.0
+    assert additive_tag_match_boost(["file:a.ts"], [], "high") == 0.0
+
+
+def test_tag_additive_noop_when_candidate_untagged():
+    assert additive_tag_match_boost(None, ["file:a.ts"], "high") == 0.0
+    assert additive_tag_match_boost([], ["file:a.ts"], "high") == 0.0
+
+
+def test_tag_additive_matches_on_intersection():
+    boost = ["file:src/x.ts", "type:bug"]
+    assert additive_tag_match_boost(["file:src/x.ts"], boost, "high") == BOOST_LEVELS["high"].additive
+    assert additive_tag_match_boost(["type:bug", "file:other.ts"], boost, "medium") == BOOST_LEVELS["medium"].additive
+
+
+def test_tag_additive_zero_when_disjoint():
+    assert additive_tag_match_boost(["file:other.ts"], ["file:src/x.ts"], "high") == 0.0
+
+
+def test_tag_additive_is_flat_and_level_scaled():
+    boost = ["file:x.ts"]
+    tags = ["file:x.ts"]
+    low = additive_tag_match_boost(tags, boost, "low")
+    med = additive_tag_match_boost(tags, boost, "medium")
+    high = additive_tag_match_boost(tags, boost, "high")
+    assert 0.0 < low < med < high
+
+
+def test_tag_additive_unknown_level_is_noop():
+    assert additive_tag_match_boost(["file:x.ts"], ["file:x.ts"], "huge") == 0.0
+
+
+def test_tag_rrf_delta_matches_top_rank_equivalent():
+    cand = _tagged(0.5, ["file:x.ts"])
+    expected = BOOST_LEVELS["high"].rrf * (1.0 / 61)
+    assert tag_match_rrf_delta(cand, ["file:x.ts"], "high", k=60) == expected
+
+
+def test_tag_rrf_delta_zero_when_no_match_or_no_tags():
+    assert tag_match_rrf_delta(_tagged(0.5, ["file:other.ts"]), ["file:x.ts"], "high") == 0.0
+    assert tag_match_rrf_delta(_tagged(0.5, None), ["file:x.ts"], "high") == 0.0
+    assert tag_match_rrf_delta(_tagged(0.5, ["file:x.ts"]), None, "high") == 0.0
+
+
+def test_tag_rrf_delta_is_rank_independent():
+    """Two matched candidates get the same delta regardless of RRF position."""
+    a = _tagged(0.9, ["file:x.ts"])
+    b = _tagged(0.01, ["file:x.ts"])
+    assert tag_match_rrf_delta(a, ["file:x.ts"], "medium") == tag_match_rrf_delta(b, ["file:x.ts"], "medium")
+
+
+def test_tag_rrf_delta_unknown_level_is_noop():
+    assert tag_match_rrf_delta(_tagged(0.5, ["file:x.ts"]), ["file:x.ts"], "huge") == 0.0

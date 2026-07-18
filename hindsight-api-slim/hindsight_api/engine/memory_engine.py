@@ -4080,6 +4080,8 @@ class MemoryEngine(MemoryEngineInterface):
         tags: list[str] | None = None,
         tags_match: TagsMatch = "any",
         tag_groups: list[TagGroup] | None = None,
+        boost_tags: list[str] | None = None,
+        boost_tags_level: str = "medium",
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         min_scores: MinScores | None = None,
@@ -4246,6 +4248,8 @@ class MemoryEngine(MemoryEngineInterface):
                             tags=tags,
                             tags_match=tags_match,
                             tag_groups=tag_groups,
+                            boost_tags=boost_tags,
+                            boost_tags_level=boost_tags_level,
                             created_after=created_after,
                             created_before=created_before,
                             min_scores=min_scores,
@@ -4384,6 +4388,8 @@ class MemoryEngine(MemoryEngineInterface):
         tags: list[str] | None = None,
         tags_match: TagsMatch = "any",
         tag_groups: list[TagGroup] | None = None,
+        boost_tags: list[str] | None = None,
+        boost_tags_level: str = "medium",
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         min_scores: MinScores | None = None,
@@ -4797,10 +4803,14 @@ class MemoryEngine(MemoryEngineInterface):
                     # Sort by RRF score (boosted per-strategy if configured) and take top
                     # candidates. The weighted-RRF boost keeps boosted-arm candidates from
                     # being trimmed out of the reranker's global budget.
-                    from .search.recall_boost import boosted_rrf_score
+                    from .search.recall_boost import boosted_rrf_score, tag_match_rrf_delta
 
                     strategy_boosts = get_config().recall_strategy_boosts
-                    merged_candidates.sort(key=lambda mc: boosted_rrf_score(mc, strategy_boosts), reverse=True)
+                    merged_candidates.sort(
+                        key=lambda mc: boosted_rrf_score(mc, strategy_boosts)
+                        + tag_match_rrf_delta(mc, boost_tags, boost_tags_level),
+                        reverse=True,
+                    )
                     pre_filtered_count = len(merged_candidates) - reranker_max_candidates
                     merged_candidates = merged_candidates[:reranker_max_candidates]
 
@@ -4881,11 +4891,16 @@ class MemoryEngine(MemoryEngineInterface):
                 # Per-strategy additive boost: nudge candidates surfaced by a
                 # prioritised retrieval arm up the final ordering.
                 strategy_boosts = get_config().recall_strategy_boosts
-                if strategy_boosts:
-                    from .search.recall_boost import additive_strategy_boost
+                if strategy_boosts or boost_tags:
+                    from .search.recall_boost import additive_strategy_boost, additive_tag_match_boost
 
                     for sr in scored_results:
-                        sr.weight += additive_strategy_boost(sr.candidate.source_ranks, strategy_boosts)
+                        if strategy_boosts:
+                            sr.weight += additive_strategy_boost(sr.candidate.source_ranks, strategy_boosts)
+                        if boost_tags:
+                            sr.weight += additive_tag_match_boost(
+                                sr.candidate.retrieval.tags, boost_tags, boost_tags_level
+                            )
                 scored_results.sort(key=lambda x: x.weight, reverse=True)
                 log_buffer.append("  [4.6] Combined scoring: ce * recency_boost(0.2) * temporal_boost(0.2)")
                 if strategy_boosts:

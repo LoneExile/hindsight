@@ -25,6 +25,7 @@ Both functions are no-ops when ``boosts`` is empty, preserving current behaviour
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .types import MergedCandidate
 
@@ -115,3 +116,56 @@ def additive_strategy_boost(source_ranks: dict[str, int], boosts: dict[str, str]
     if not boosts:
         return 0.0
     return sum(BOOST_LEVELS[level].additive for strategy, level in boosts.items() if f"{strategy}_rank" in source_ranks)
+
+
+BoostLevel = Literal["low", "medium", "high"]
+
+
+def _tags_intersect(candidate_tags: list[str] | None, boost_tags: list[str] | None) -> bool:
+    """True when the memory carries at least one of the caller's boost tags."""
+    if not candidate_tags or not boost_tags:
+        return False
+    return not set(candidate_tags).isdisjoint(boost_tags)
+
+
+def tag_match_rrf_delta(
+    candidate: MergedCandidate,
+    boost_tags: list[str] | None,
+    level: str = "medium",
+    k: int = 60,
+) -> float:
+    """Return a pre-cap weighted-RRF delta for a tag-matched candidate.
+
+    Unlike :func:`boosted_rrf_score` (which keys off a retrieval arm's *rank*),
+    a caller-supplied tag match is a flat property of the memory, not a rank —
+    so a match contributes a single top-rank-equivalent RRF unit ``1/(k+1)``
+    scaled by the level's ``rrf`` weight. This keeps caller-prioritised memories
+    (e.g. those tagged with the files being edited) from being trimmed by the
+    reranker candidate cap.
+
+    Returns 0.0 when ``boost_tags`` is empty, the level is unknown, or the
+    candidate carries none of the boost tags — preserving current behaviour.
+    """
+    weights = BOOST_LEVELS.get(level)
+    if weights is None or not _tags_intersect(candidate.retrieval.tags, boost_tags):
+        return 0.0
+    return weights.rrf * (1.0 / (k + 1))
+
+
+def additive_tag_match_boost(
+    candidate_tags: list[str] | None,
+    boost_tags: list[str] | None,
+    level: str = "medium",
+) -> float:
+    """Return the post-rerank flat additive boost for a tag-matched candidate.
+
+    Mirrors :func:`additive_strategy_boost` but keyed on caller-supplied tag
+    membership instead of retrieval-arm rank: a candidate whose stored tags
+    intersect ``boost_tags`` gets the level's ``additive`` bump on its final
+    ranking weight. 0.0 when there is no match, no boost tags, or an unknown
+    level.
+    """
+    weights = BOOST_LEVELS.get(level)
+    if weights is None or not _tags_intersect(candidate_tags, boost_tags):
+        return 0.0
+    return weights.additive
